@@ -28,6 +28,7 @@ model Client {
   status          String            @default("ACTIVE")
   forceDlr        Boolean           @default(false)
   dlrTimeout      Int               @default(0)
+  invoiceFrequency String           @default("MONTHLY")
   notes           String?
   createdAt       DateTime          @default(now())
   updatedAt       DateTime          @updatedAt
@@ -69,6 +70,7 @@ model Supplier {
   status          String            @default("ACTIVE")
   forceDlr        Boolean           @default(false)
   dlrTimeout      Int               @default(0)
+  invoiceFrequency String           @default("MONTHLY")
   notes           String?
   throughput      Int               @default(100)
   createdAt       DateTime          @default(now())

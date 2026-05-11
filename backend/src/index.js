@@ -298,7 +298,14 @@ app.post('/api/messages/send', authenticateJWT, async (req, res) => {
     
     let supplierMessageId = null;
     try {
-      const kresp = await axios.get(`${KANNEL_URL}/cgi-bin/sendsms`, { params: { username: 'tester', password: 'testerpass', from: (client.name||'SMSGW').substring(0,11), to, text: content, 'dlr-mask': 31, 'dlr-url': `http://172.17.0.1:3001/api/dlr/callback?id=${msg.id}&msgid=${messageId}` }, timeout: 10000 });
+      const kresp = await axios.get(`${KANNEL_URL}/cgi-bin/sendsms`, { params: { 
+          username: supplier?.smppConnections?.[0]?.systemId || 'tester', 
+          password: supplier?.smppConnections?.[0]?.password || 'testerpass', 
+          to: to, 
+          text: content,
+          'dlr-mask': 31,
+          'dlr-url': `http://172.17.0.1:3001/api/dlr/callback?id=${msg.id}&msgid=${messageId}`
+        }, timeout: 10000 });
       const match = kresp.data?.match(/message id: ([^\n]+)/i);
       supplierMessageId = match ? match[1].trim() : null;
       await prisma.message.update({ where: { id: msg.id }, data: { supplierMessageId, status: 'SUBMITTED', submittedToKannel: new Date() } });
@@ -481,3 +488,70 @@ app.get('/api/seed', async (req, res) => {
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => { logger.info(`Running on ${PORT}`); setTimeout(() => { fetch(`http://localhost:${PORT}/api/seed`).catch(()=>{}); }, 3000); });
 process.on('SIGTERM', async () => { await prisma.$disconnect(); await redisClient.quit(); server.close(()=>process.exit(0)); });
+
+// ==================== SYNC CLIENT TO KANNEL SMPP ====================
+app.post('/api/clients/:id/sync-smpp', authenticateJWT, async (req, res) => {
+  try {
+    const client = await prisma.client.findUnique({
+      where: { id: req.params.id },
+      include: { smppAccounts: true }
+    });
+    
+    if (!client || !client.smppAccounts?.length) {
+      return res.status(400).json({ error: 'Client has no SMPP account' });
+    }
+    
+    const smpp = client.smppAccounts[0];
+    
+    // Add to Kannel opensmppbox config
+    const fs = require('fs');
+    const smppUserConfig = `
+group = smpp-logins
+username = "${smpp.systemId}"
+password = "${smpp.password}"
+system-id = "${client.accountId}"
+throughput = 100
+default-sender = "${client.name?.substring(0,11) || 'SMSGW'}"
+`;
+    
+    // Append to opensmppbox config
+    fs.appendFileSync('/etc/kannel/opensmppbox.conf', smppUserConfig);
+    
+    // Reload Kannel (SIGHUP)
+    try {
+      const { exec } = require('child_process');
+      exec('killall -HUP bearerbox opensmppbox');
+    } catch(e) {}
+    
+    io.emit('live-log', { 
+      type: 'smpp_sync', 
+      message: `Client ${client.name} synced to SMPP as ${smpp.systemId}`, 
+      timestamp: new Date() 
+    });
+    
+    res.json({ 
+      success: true, 
+      message: 'Client synced to SMPP',
+      smppHost: req.hostname,
+      smppPort: 2775,
+      systemId: smpp.systemId,
+      password: smpp.password
+    });
+  } catch(e) { res.status(400).json({ error: e.message }); }
+});
+
+// Get all SMPP connected clients
+app.get('/api/smpp/clients', authenticateJWT, async (req, res) => {
+  try {
+    // Parse opensmppbox config for connected users
+    const fs = require('fs');
+    const config = fs.readFileSync('/etc/kannel/opensmppbox.conf', 'utf8');
+    const users = [];
+    const regex = /username = "([^"]+)"\s+password = "([^"]+)"\s+system-id = "([^"]+)"/g;
+    let match;
+    while ((match = regex.exec(config)) !== null) {
+      users.push({ username: match[1], password: match[2], systemId: match[3] });
+    }
+    res.json({ users });
+  } catch(e) { res.json({ users: [] }); }
+});
