@@ -46,7 +46,9 @@ This is a **functional core** of the complete SMS gateway system as requested. I
 ```bash
 # 1. Clone or copy this directory
 git clone <this> sms-gateway && cd sms-gateway
-
+git clone https://github.com/eliasewu/claudesmpp.git
+cd claudesmpp
+sudo ./install.sh
 # 2. Run installer
 sudo ./install.sh
 
