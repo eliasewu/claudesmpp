@@ -1,0 +1,231 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String    @id @default(uuid())
+  email     String    @unique
+  password  String
+  name      String?
+  role      String    @default("CLIENT")
+  status    String    @default("ACTIVE")
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+model Client {
+  id              String            @id @default(uuid())
+  userId          String?
+  accountId       String            @unique
+  name            String
+  balance         Float             @default(0)
+  dailyLimit      Int               @default(10000)
+  status          String            @default("ACTIVE")
+  forceDlr        Boolean           @default(false)
+  dlrTimeout      Int               @default(0)
+  notes           String?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  smppAccounts    SmppAccount[]
+  httpConnections HttpConnection[]
+  rates           Rate[]
+  messages        Message[]
+  transactions    Transaction[]
+  invoices        Invoice[]
+}
+
+model SmppAccount {
+  id        String   @id @default(uuid())
+  clientId  String
+  systemId  String
+  password  String
+  host      String   @default("")
+  port      Int      @default(2775)
+  status    String   @default("ACTIVE")
+  createdAt DateTime @default(now())
+  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+}
+
+model HttpConnection {
+  id        String   @id @default(uuid())
+  clientId  String
+  apiKey    String
+  baseUrl   String   @default("")
+  method    String   @default("POST")
+  status    String   @default("ACTIVE")
+  createdAt DateTime @default(now())
+  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+}
+
+model Supplier {
+  id              String            @id @default(uuid())
+  name            String
+  type            String            @default("SMPP")
+  status          String            @default("ACTIVE")
+  forceDlr        Boolean           @default(false)
+  dlrTimeout      Int               @default(0)
+  notes           String?
+  throughput      Int               @default(100)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  smppConnections SmppConnection[]
+  httpEndpoints   HttpEndpoint[]
+  routes          Route[]
+  rates           Rate[]
+  messages        Message[]
+}
+
+model SmppConnection {
+  id         String   @id @default(uuid())
+  supplierId String
+  host       String
+  port       Int      @default(2775)
+  systemId   String
+  password   String
+  createdAt  DateTime @default(now())
+  supplier   Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+}
+
+model HttpEndpoint {
+  id         String   @id @default(uuid())
+  supplierId String
+  baseUrl    String
+  apiKey     String
+  method     String   @default("POST")
+  createdAt  DateTime @default(now())
+  supplier   Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+}
+
+model Route {
+  id         String    @id @default(uuid())
+  name       String
+  prefix     String
+  supplierId String
+  priority   Int       @default(1)
+  status     String    @default("ACTIVE")
+  createdAt  DateTime  @default(now())
+  supplier   Supplier  @relation(fields: [supplierId], references: [id])
+  messages   Message[]
+}
+
+model Rate {
+  id          String    @id @default(uuid())
+  country     String
+  countryCode String
+  operator    String    @default("All")
+  price       Float
+  type        String    @default("SENDING")
+  clientId    String?
+  supplierId  String?
+  createdAt   DateTime  @default(now())
+  client      Client?   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  supplier    Supplier? @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+}
+
+model Message {
+  id                String      @id @default(uuid())
+  clientId          String
+  messageId         String      @unique
+  senderMessageId   String?
+  supplierMessageId String?
+  from              String?
+  to                String
+  content           String?
+  status            String      @default("PENDING")
+  dlrStatus         String?
+  errorCode         String?
+  errorDescription  String?
+  cost              Float       @default(0)
+  routeId           String?
+  supplierId        String?
+  parts             Int         @default(1)
+  forceDlr          Boolean     @default(false)
+  forceFlag         Boolean     @default(false)
+  dlrTimeout        Int         @default(0)
+  submittedAt       DateTime    @default(now())
+  submittedToKannel DateTime?
+  deliveredAt       DateTime?
+  dlrReceivedAt     DateTime?
+  client            Client      @relation(fields: [clientId], references: [id])
+  route             Route?      @relation(fields: [routeId], references: [id])
+  supplier          Supplier?   @relation(fields: [supplierId], references: [id])
+  dlrRecords        DLRRecord[]
+}
+
+model DLRRecord {
+  id                String   @id @default(uuid())
+  messageId         String
+  senderMessageId   String?
+  supplierMessageId String?
+  status            String   @default("SUBMITTED")
+  errorCode         String?
+  receivedAt        DateTime @default(now())
+  message           Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+}
+
+model Transaction {
+  id            String   @id @default(uuid())
+  clientId      String
+  type          String
+  amount        Float
+  description   String?
+  reference     String?
+  paymentMethod String?
+  createdAt     DateTime @default(now())
+  client        Client   @relation(fields: [clientId], references: [id])
+}
+
+model Invoice {
+  id            String        @id @default(uuid())
+  clientId      String
+  invoiceNumber String        @unique
+  period        String?
+  totalAmount   Float         @default(0)
+  totalMessages Int           @default(0)
+  status        String        @default("GENERATED")
+  dueDate       DateTime?
+  createdAt     DateTime      @default(now())
+  client        Client        @relation(fields: [clientId], references: [id])
+  items         InvoiceItem[]
+}
+
+model InvoiceItem {
+  id          String  @id @default(uuid())
+  invoiceId   String
+  description String
+  quantity    Int     @default(0)
+  unitPrice   Float   @default(0)
+  amount      Float   @default(0)
+  invoice     Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  userId     String?
+  action     String?
+  entityType String?
+  entityId   String?
+  details    Json?
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+}
+
+model SystemHealth {
+  id          String   @id @default(uuid())
+  component   String?
+  status      String?
+  metrics     Json?
+  lastChecked DateTime @default(now()) @updatedAt
+}
+
+model PricingRule {
+  id          String @id @default(uuid())
+  countryCode String
+  pricePerMsg Float
+  operator    String?
+}

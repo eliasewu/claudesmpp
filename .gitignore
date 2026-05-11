@@ -1,0 +1,12 @@
+node_modules/
+.env
+*.log
+error.log
+combined.log
+mysql-data/
+redis-data/
+kannel-logs/
+kannel-spool/
+dist/
+.DS_Store
+*.pid
