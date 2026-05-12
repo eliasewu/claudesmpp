@@ -345,92 +345,6 @@ app.post('/api/messages/send', authenticateJWT, async (req, res) => {
 });
 
 // Old send endpoint - replace
-app._old_send
-  try {
-    const { to, content, clientId, supplierId, smsType } = req.body;
-    const client = await prisma.client.findUnique({ where: { id: clientId } });
-    if (!client) return res.status(404).json({ error: "Client not found" });
-    
-    // Find rate
-    const cc = to.replace(/^\+/,"").substring(0,2);
-    const rate = await prisma.rate.findFirst({ where: { OR: [{ clientId: client.id, countryCode: cc, status: 'ACTIVE' }, { countryCode: cc, clientId: null, status: 'ACTIVE' }, { countryCode: "*", clientId: null, status: 'ACTIVE' }] }, orderBy: { price: "asc" } });
-    const cost = rate?.price || 0.05;
-    
-    // Check balance first, then credit
-    const totalAvailable = (client.balance || 0) + (client.credit || 0);
-    if (totalAvailable < cost) return res.status(402).json({ error: `Insufficient funds. Need $${cost}, available: $${totalAvailable.toFixed(2)} (Balance: $${client.balance?.toFixed(2)}, Credit: $${client.credit?.toFixed(0)})` });
-    
-    // Deduct from balance first, then credit
-    if (client.balance >= cost) {
-      await prisma.client.update({ where: { id: client.id }, data: { balance: { decrement: cost } } });
-    } else {
-      const fromBalance = client.balance || 0;
-      const fromCredit = cost - fromBalance;
-      await prisma.client.update({ where: { id: client.id }, data: { balance: 0, credit: { decrement: fromCredit } } });
-    }
-    
-    const messageId = "MSG" + Date.now();
-    await prisma.message.create({ data: { messageId, clientId: client.id, to, content, cost, status: "SUBMITTED", supplierId, smsType: smsType || "PROMOTIONAL" } });
-    await prisma.transaction.create({ data: { clientId: client.id, type: "DEDUCTION", amount: -cost, description: `SMS to ${to}`, reference: messageId } });
-    
-    res.json({ success: true, messageId, cost, newBalance: client.balance - cost });
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
-
-// Old send endpoint - replace
-app._old_send
-  try {
-    const { to, content, clientId, supplierId } = req.body;
-    const client = await prisma.client.findUnique({ where: { id: clientId } });
-    if (!client) return res.status(404).json({ error: 'Client not found' });
-    
-    const cc = to.replace(/^\+/,'').substring(0,2);
-    const rate = await prisma.rate.findFirst({ where: { OR: [{ clientId: client.id, countryCode: cc }, { countryCode: cc, clientId: null }, { countryCode: '*', clientId: null }] }, orderBy: { price: 'asc' } });
-    const cost = rate?.price || 0.05;
-    if (client.balance < cost) return res.status(402).json({ error: `Insufficient balance. $${cost} needed` });
-    
-    let supplier = null;
-    if (supplierId) supplier = await prisma.supplier.findUnique({ where: { id: supplierId }, include: { smppConnections: true } });
-    else {
-      const route = await prisma.route.findFirst({
-        where: { OR: [{ prefix: to.replace(/^\+/,'').substring(0,3) }, { prefix: to.replace(/^\+/,'').substring(0,1) }, { prefix: '*' }], status: 'ACTIVE' },
-        orderBy: { priority: 'asc' }, include: { supplier: { include: { smppConnections: true } } }
-      });
-      if (route) supplier = route.supplier;
-    }
-    
-    const senderMessageId = genId('SND');
-    const messageId = genId('MSG');
-    
-    const msg = await prisma.message.create({
-      data: { messageId, senderMessageId, clientId: client.id, from: client.name||'SMSGW', to, content, status: 'SUBMITTED', cost, supplierId: supplier?.id, forceDlr: client.forceDlr, dlrTimeout: client.dlrTimeout||0, parts: Math.ceil((content?.length||0)/160) }
-    });
-    
-    let supplierMessageId = null;
-    try {
-      const kresp = await axios.get(`${KANNEL_URL}/cgi-bin/sendsms`, { params: { 
-          username: supplier?.smppConnections?.[0]?.systemId || 'tester', 
-          password: supplier?.smppConnections?.[0]?.password || 'testerpass', 
-          to: to, 
-          text: content,
-          'dlr-mask': 31,
-          'dlr-url': `http://172.17.0.1:3001/api/dlr/callback?id=${msg.id}&msgid=${messageId}`
-        }, timeout: 10000 });
-      const match = kresp.data?.match(/message id: ([^\n]+)/i);
-      supplierMessageId = match ? match[1].trim() : null;
-      await prisma.message.update({ where: { id: msg.id }, data: { supplierMessageId, status: 'SUBMITTED', submittedToKannel: new Date() } });
-    } catch(e) {}
-    
-    await prisma.transaction.create({ data: { clientId: client.id, type: 'DEDUCTION', amount: -cost, description: `SMS to ${to}`, reference: messageId } });
-    await prisma.client.update({ where: { id: client.id }, data: { balance: { decrement: cost } } });
-    await prisma.dLRRecord.create({ data: { messageId: msg.id, status: 'SUBMITTED', senderMessageId, supplierMessageId: supplierMessageId||'' } });
-    
-    io.emit('live-log', { type: 'submit_sm_resp', senderMessageId, messageId, supplierMessageId: supplierMessageId||'PENDING', to, content: content?.substring(0,50), client: client.name, supplier: supplier?.name, cost, status: 'SUBMITTED', timestamp: new Date() });
-    
-    res.json({ success: true, messageId, senderMessageId, supplierMessageId, cost, supplier: supplier?.name });
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
-
 app.use(express.urlencoded({ extended: true }));
 app.get('/api/dlr/callback', async (req, res) => {
   try {
@@ -752,7 +666,7 @@ app.post("/api/rates/bulk", authenticateJWT, async (req, res) => {
   
   if (mccMncIds && mccMncIds.length > 0) {
     for (const id of mccMncIds) {
-      const mcc = await prisma.$queryRaw\`SELECT * FROM MccMnc WHERE id = \${id}\`;
+      const mcc = await prisma.$queryRaw`SELECT * FROM MccMnc WHERE id = \${id}`;
       if (mcc.length > 0) {
         await prisma.rate.create({ data: { country, countryCode, mcc: mcc[0].mcc, mnc: mcc[0].mnc, operator: mcc[0].operator, price: parseFloat(price), type: type || "SENDING", clientId: clientId || null, supplierId: supplierId || null, smsType: smsType || "transactional", status: "ACTIVE" } });
         added++;
@@ -763,7 +677,7 @@ app.post("/api/rates/bulk", authenticateJWT, async (req, res) => {
     added++;
   }
   
-  res.json({ added, message: \`\${added} rates created. Old rates deactivated.\` });
+  res.json({ added, message: `\${added} rates created. Old rates deactivated.` });
 });
 
 // ==================== GET RATES WITH TIMESTAMPS ====================
@@ -785,7 +699,7 @@ app.post("/api/rates/bulk", authenticateJWT, async (req, res) => {
   
   if (mccMncIds && mccMncIds.length > 0) {
     for (const id of mccMncIds) {
-      const mcc = await prisma.$queryRaw\`SELECT * FROM MccMnc WHERE id = \${id}\`;
+      const mcc = await prisma.$queryRaw`SELECT * FROM MccMnc WHERE id = \${id}`;
       if (mcc.length > 0) {
         await prisma.rate.create({ data: { country, countryCode, mcc: mcc[0].mcc, mnc: mcc[0].mnc, operator: mcc[0].operator, price: parseFloat(price), type: type || "SENDING", clientId: clientId || null, supplierId: supplierId || null, smsType: smsType || "transactional", status: "ACTIVE" } });
         added++;
@@ -796,7 +710,7 @@ app.post("/api/rates/bulk", authenticateJWT, async (req, res) => {
     added++;
   }
   
-  res.json({ added, message: \`\${added} rates created. Old rates deactivated.\` });
+  res.json({ added, message: `\${added} rates created. Old rates deactivated.` });
 });
 
 // ==================== GET RATES WITH TIMESTAMPS ====================
@@ -804,6 +718,35 @@ app.get("/api/rates/history", authenticateJWT, async (req, res) => {
   const rates = await prisma.rate.findMany({ orderBy: { createdAt: "desc" }, take: 200, include: { client: { select: { name: true } }, supplier: { select: { name: true } } } });
   res.json({ rates });
 });
+
+
+// ==================== ESSENTIAL ENDPOINTS ====================
+app.get("/api/bind-status", authenticateJWT, async (req, res) => {
+  const net = require("net"); const results = [];
+  const suppliers = await prisma.supplier.findMany({ include: { smppConnections: true } });
+  for (const s of suppliers) {
+    let status = "UNBIND"; const c = s.smppConnections?.[0];
+    if (c?.host && c?.port) {
+      try { await new Promise((resolve) => { const sock = new net.Socket(); sock.setTimeout(3000); sock.connect(c.port, c.host, () => { status = "BIND"; sock.destroy(); resolve(); }); sock.on("error", () => { sock.destroy(); resolve(); }); sock.on("timeout", () => { sock.destroy(); resolve(); }); }); } catch(e) {}
+    }
+    results.push({ id: s.id, name: s.name, type: "supplier", status });
+  }
+  const smppPortOpen = await new Promise((resolve) => { const sock = new net.Socket(); sock.setTimeout(1000); sock.connect(9095, "172.17.0.1", () => { sock.destroy(); resolve(true); }); sock.on("error", () => { sock.destroy(); resolve(false); }); sock.on("timeout", () => { sock.destroy(); resolve(false); }); });
+  const clients = await prisma.client.findMany({ where: { smppAccounts: { some: {} } }, include: { smppAccounts: true } });
+  for (const c of clients) { results.push({ id: c.id, name: c.name, type: "client", status: smppPortOpen ? "BIND" : "UNBIND", systemId: c.smppAccounts?.[0]?.systemId }); }
+  res.json({ results });
+});
+
+app.get("/api/mcc-mnc", authenticateJWT, async (req, res) => { try { const rates = await prisma.$queryRaw`SELECT * FROM MccMnc ORDER BY country ASC`; res.json({ rates }); } catch(e) { res.json({ rates: [] }); } });
+app.post("/api/mcc-mnc", authenticateJWT, async (req, res) => { const { country, countryCode, mcc, mnc, operator } = req.body; try { await prisma.$executeRaw`INSERT INTO MccMnc (id, country, countryCode, mcc, mnc, operator) VALUES (UUID(), \${country}, \${countryCode}, \${mcc}, \${mnc}, \${operator||"All"})`; res.json({ success: true }); } catch(e) { res.status(400).json({ error: e.message }); } });
+app.delete("/api/mcc-mnc/:id", authenticateJWT, async (req, res) => { try { await prisma.$executeRaw`DELETE FROM MccMnc WHERE id = \${req.params.id}`; res.json({ success: true }); } catch(e) { res.status(400).json({ error: e.message }); } });
+
+app.post("/api/clients/:id/topup", authenticateJWT, async (req, res) => { const { amount, description, paymentMethod } = req.body; const ta = parseFloat(amount); await prisma.client.update({ where: { id: req.params.id }, data: { balance: { increment: ta } } }); await prisma.transaction.create({ data: { clientId: req.params.id, type: "TOPUP", amount: ta, description: description||"Funds added", reference: "TOPUP-"+Date.now(), paymentMethod: paymentMethod||"MANUAL" } }); res.json({ success: true }); });
+app.post("/api/suppliers/:id/topup", authenticateJWT, async (req, res) => { const { amount, description, paymentMethod } = req.body; const ta = parseFloat(amount); await prisma.supplier.update({ where: { id: req.params.id }, data: { balance: { increment: ta } } }); await prisma.$executeRaw`INSERT INTO SupplierTransaction (id, supplierId, type, amount, description, reference, paymentMethod, createdAt) VALUES (UUID(), \${req.params.id}, 'TOPUP', \${ta}, \${description||'Credit added'}, \${'TOPUP-'+Date.now()}, \${paymentMethod||'MANUAL'}, NOW())`; res.json({ success: true }); });
+app.get("/api/suppliers/:id/transactions", authenticateJWT, async (req, res) => { const txs = await prisma.$queryRaw`SELECT * FROM SupplierTransaction WHERE supplierId = \${req.params.id} ORDER BY createdAt DESC LIMIT 100`; res.json({ transactions: txs }); });
+app.get("/api/clients/:id/credentials", authenticateJWT, async (req, res) => { const client = await prisma.client.findUnique({ where: { id: req.params.id }, include: { smppAccounts: true } }); res.json({ name: client?.name, smpp: client?.smppAccounts?.map(s => ({ systemId: s.systemId, password: s.password })) }); });
+app.delete("/api/clients/:id", authenticateJWT, async (req, res) => { await prisma.client.delete({ where: { id: req.params.id } }); res.json({ success: true }); });
+app.delete("/api/rates/:id", authenticateJWT, async (req, res) => { await prisma.rate.delete({ where: { id: req.params.id } }); res.json({ success: true }); });
 
 app.get('/api/health', async (req, res) => {
   try { await prisma.$queryRaw`SELECT 1`; res.json({ status: 'healthy', db: 'connected', timestamp: new Date().toISOString() }); }
