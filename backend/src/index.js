@@ -509,6 +509,170 @@ io.on('connection', (socket) => {
 });
 
 // Health
+
+// ==================== VIEW CLIENT CREDENTIALS ====================
+app.get("/api/clients/:id/credentials", authenticateJWT, async (req, res) => {
+  const client = await prisma.client.findUnique({
+    where: { id: req.params.id },
+    include: { smppAccounts: true, httpConnections: true }
+  });
+  if (!client) return res.status(404).json({ error: "Not found" });
+  res.json({
+    name: client.name,
+    smpp: client.smppAccounts?.map(s => ({ systemId: s.systemId, password: s.password, host: s.host, port: s.port })),
+    http: client.httpConnections?.map(h => ({ apiKey: h.apiKey, baseUrl: h.baseUrl }))
+  });
+});
+
+// ==================== CLIENT TRANSACTIONS ====================
+app.get("/api/clients/:id/transactions", authenticateJWT, async (req, res) => {
+  const txs = await prisma.transaction.findMany({
+    where: { clientId: req.params.id },
+    orderBy: { createdAt: "desc" },
+    take: 100
+  });
+  res.json({ transactions: txs });
+});
+
+// ==================== BIND STATUS ====================
+app.get("/api/bind-status", authenticateJWT, async (req, res) => {
+  const net = require("net");
+  const results = [];
+  
+  // Check suppliers via TCP
+  const suppliers = await prisma.supplier.findMany({ include: { smppConnections: true } });
+  for (const s of suppliers) {
+    let status = "UNBIND";
+    const c = s.smppConnections?.[0];
+    if (c?.host && c?.port) {
+      try {
+        await new Promise((resolve) => {
+          const sock = new net.Socket(); sock.setTimeout(3000);
+          sock.connect(c.port, c.host, () => { status = "BIND"; sock.destroy(); resolve(); });
+          sock.on("error", () => { sock.destroy(); resolve(); });
+          sock.on("timeout", () => { sock.destroy(); resolve(); });
+        });
+      } catch(e) {}
+    }
+    results.push({ id: s.id, name: s.name, type: "supplier", status, host: c?.host, port: c?.port });
+  }
+  
+  // Check clients - all clients with SMPP accounts show BIND if SMPP server port is open
+  const smppPortOpen = await new Promise((resolve) => {
+    const sock = new net.Socket(); sock.setTimeout(1000);
+    sock.connect(9095, "172.17.0.1", () => { sock.destroy(); resolve(true); });
+    sock.on("error", () => { sock.destroy(); resolve(false); });
+    sock.on("timeout", () => { sock.destroy(); resolve(false); });
+  });
+  
+  const clients = await prisma.client.findMany({
+    where: { smppAccounts: { some: {} } },
+    include: { smppAccounts: true }
+  });
+  
+  for (const c of clients) {
+    const smpp = c.smppAccounts?.[0];
+    // Client is BIND if SMPP server is running AND they have credentials
+    const status = (smppPortOpen && smpp?.systemId) ? "BIND" : "UNBIND";
+    results.push({ id: c.id, name: c.name, type: "client", status, systemId: smpp?.systemId || "N/A" });
+  }
+  
+  res.json({ results });
+});
+
+// ==================== MCC/MNC ====================
+app.get("/api/mcc-mnc", authenticateJWT, async (req, res) => {
+  try { const rates = await prisma.$queryRaw`SELECT * FROM MccMnc ORDER BY country ASC`; res.json({ rates }); }
+  catch(e) { res.json({ rates: [] }); }
+});
+app.post("/api/mcc-mnc", authenticateJWT, async (req, res) => {
+  const { country, countryCode, mcc, mnc, operator } = req.body;
+  try { await prisma.$executeRaw`INSERT INTO MccMnc (id, country, countryCode, mcc, mnc, operator) VALUES (UUID(), ${country}, ${countryCode}, ${mcc}, ${mnc}, ${operator||"All"})`; res.json({ success: true }); }
+  catch(e) { res.status(400).json({ error: e.message }); }
+});
+app.delete("/api/mcc-mnc/:id", authenticateJWT, async (req, res) => {
+  try { await prisma.$executeRaw`DELETE FROM MccMnc WHERE id = ${req.params.id}`; res.json({ success: true }); }
+  catch(e) { res.status(400).json({ error: e.message }); }
+});
+
+// ==================== TOPUP + CREDENTIALS + DELETE ====================
+app.post("/api/clients/:id/topup", authenticateJWT, async (req, res) => {
+  const { amount, description, paymentMethod } = req.body;
+  const ta = parseFloat(amount);
+  await prisma.client.update({ where: { id: req.params.id }, data: { balance: { increment: ta } } });
+  await prisma.transaction.create({ data: { clientId: req.params.id, type: "TOPUP", amount: ta, description, reference: "TOPUP-"+Date.now(), paymentMethod: paymentMethod||"MANUAL" } });
+  res.json({ success: true });
+});
+app.get("/api/clients/:id/credentials", authenticateJWT, async (req, res) => {
+  const client = await prisma.client.findUnique({ where: { id: req.params.id }, include: { smppAccounts: true } });
+  res.json({ name: client.name, smpp: client.smppAccounts?.map(s => ({ systemId: s.systemId, password: s.password })) });
+});
+app.delete("/api/clients/:id", authenticateJWT, async (req, res) => {
+  await prisma.client.delete({ where: { id: req.params.id } });
+  res.json({ success: true });
+});
+app.delete("/api/rates/:id", authenticateJWT, async (req, res) => {
+  await prisma.rate.delete({ where: { id: req.params.id } });
+  res.json({ success: true });
+});
+
+// ==================== SUPPLIER TOPUP ====================
+app.post("/api/suppliers/:id/topup", authenticateJWT, async (req, res) => {
+  const { amount, description, paymentMethod } = req.body;
+  const ta = parseFloat(amount);
+  // Update supplier credit/balance
+  await prisma.supplier.update({ where: { id: req.params.id }, data: { creditLimit: { increment: ta } } });
+  res.json({ success: true, message: "Credit added to supplier" });
+});
+
+// ==================== CLIENT/SUPPLIER TPS UPDATE ====================
+app.put("/api/clients/:id/tps", authenticateJWT, async (req, res) => {
+  const { tps } = req.body;
+  await prisma.client.update({ where: { id: req.params.id }, data: { tps: parseInt(tps) || 1 } });
+  res.json({ success: true });
+});
+
+app.put("/api/suppliers/:id/throughput", authenticateJWT, async (req, res) => {
+  const { throughput } = req.body;
+  await prisma.supplier.update({ where: { id: req.params.id }, data: { throughput: parseInt(throughput) || 100 } });
+  res.json({ success: true });
+});
+
+
+// ==================== SUPPLIER CREDIT/TOPUP ====================
+app.post("/api/suppliers/:id/topup", authenticateJWT, async (req, res) => {
+  const { amount, description, paymentMethod } = req.body;
+  const ta = parseFloat(amount);
+  await prisma.supplier.update({ where: { id: req.params.id }, data: { creditLimit: { increment: ta } } });
+  res.json({ success: true, message: "Credit added" });
+});
+
+// ==================== SMS LENGTH CALCULATOR ====================
+app.post("/api/calculate-length", authenticateJWT, async (req, res) => {
+  const { text, unicode } = req.body;
+  const isUnicode = unicode || /[^ -]/.test(text);
+  const charLimit = isUnicode ? 70 : 160;
+  const parts = Math.ceil((text?.length || 0) / charLimit);
+  res.json({ length: text?.length || 0, isUnicode, charLimit, parts });
+});
+
+// ==================== FORCE DLR TIMEOUT ====================
+app.post("/api/messages/:id/force-dlr", authenticateJWT, async (req, res) => {
+  const { status, errorCode } = req.body;
+  const msg = await prisma.message.update({
+    where: { id: req.params.id },
+    data: { status: status || "DELIVERED", dlrStatus: status || "DELIVERED", errorCode, deliveredAt: new Date(), dlrReceivedAt: new Date(), forceFlag: true }
+  });
+  res.json(msg);
+});
+
+// ==================== CLIENT DLR FLAG ====================
+app.put("/api/clients/:id/dlr-settings", authenticateJWT, async (req, res) => {
+  const { forceDlr, dlrTimeout } = req.body;
+  await prisma.client.update({ where: { id: req.params.id }, data: { forceDlr: forceDlr === true, dlrTimeout: parseInt(dlrTimeout) || 0 } });
+  res.json({ success: true });
+});
+
 app.get('/api/health', async (req, res) => {
   try { await prisma.$queryRaw`SELECT 1`; res.json({ status: 'healthy', db: 'connected', timestamp: new Date().toISOString() }); }
   catch(e) { res.status(500).json({ status: 'degraded' }); }
