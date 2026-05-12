@@ -320,7 +320,7 @@ app.post('/api/messages/send', authenticateJWT, async (req, res) => {
     
     // Find rate
     const cc = to.replace(/^\+/,"").substring(0,2);
-    const rate = await prisma.rate.findFirst({ where: { OR: [{ clientId: client.id, countryCode: cc, status: 'ACTIVE' }, { countryCode: cc, clientId: null, status: 'ACTIVE' }, { countryCode: "*", clientId: null, status: 'ACTIVE' }] }, orderBy: { price: "asc" } });
+    const rate = await prisma.rate.findFirst({ where: { OR: [{ clientId: client.id, countryCode: cc }, { countryCode: cc, clientId: null }, { countryCode: "*", clientId: null }] }, orderBy: { price: "asc" } });
     const cost = rate?.price || 0.05;
     
     // Check balance first, then credit
