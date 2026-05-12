@@ -559,7 +559,7 @@ default-sender = "${client.name?.substring(0,11) || 'SMSGW'}"
 `;
     
     // Append to opensmppbox config
-    fs.appendFileSync('/etc/kannel/opensmppbox.conf', smppUserConfig);
+    fs.appendFileSync('/etc/kannel/smpp_users.json', smppUserConfig);
     
     // Reload Kannel (SIGHUP)
     try {
@@ -589,7 +589,7 @@ app.get('/api/smpp/clients', authenticateJWT, async (req, res) => {
   try {
     // Parse opensmppbox config for connected users
     const fs = require('fs');
-    const config = fs.readFileSync('/etc/kannel/opensmppbox.conf', 'utf8');
+    const config = fs.readFileSync('/etc/kannel/smpp_users.json', 'utf8');
     const users = [];
     const regex = /username = "([^"]+)"\s+password = "([^"]+)"\s+system-id = "([^"]+)"/g;
     let match;
