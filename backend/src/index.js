@@ -156,6 +156,97 @@ app.get('/api/clients', authenticateJWT, async (req, res) => {
 app.post('/api/clients', authenticateJWT, async (req, res) => {
   try {
     const d = req.body;
+    const smppSystemId = d.smppSystemId || d.systemId || d.authName;
+    const smppPassword = d.smppPassword || d.password;
+    
+    const client = await prisma.client.create({
+      data: {
+        accountId: d.accountId || 'CLI'+Date.now(),
+        name: d.name,
+        alias: d.alias || d.name,
+        balance: parseFloat(d.balance)||0,
+        credit: parseFloat(d.credit)||50000,
+        dailyLimit: parseInt(d.dailyLimit)||10000,
+        tps: parseInt(d.tps)||1,
+        priority: parseInt(d.priority)||1,
+        retry: parseInt(d.retry)||0,
+        dlrTimeout: parseInt(d.dlrTimeout)||0,
+        forceDlr: d.forceDlr===true||d.forceDlr==='true',
+        invoiceFrequency: d.invoiceFrequency||'MONTHLY',
+        chargeRule: d.chargeRule||'DELIVERY',
+        countRule: d.countRule||'0-0-140-6',
+        contentHidden: d.contentHidden||'PLAINTEXT',
+        numberHidden: d.numberHidden||'SHOW',
+        notes: d.notes||'',
+        smppAccounts: smppSystemId ? { create: { systemId: smppSystemId, password: smppPassword||'', host: d.smppHost||'0.0.0.0', port: parseInt(d.smppPort)||0 } } : undefined,
+      }
+    });
+    
+    // Auto-sync to SMPP server
+    if (smppSystemId) syncClientToSMPP(client);
+    
+    res.json(client);
+  } catch(e) { res.status(400).json({ error: e.message }); }
+});
+
+// Auto-sync function
+function syncClientToSMPP(client) {
+  const fs = require('fs');
+  const usersFile = '/etc/kannel/smpp_users.json';
+  let users = {};
+  try { users = JSON.parse(fs.readFileSync(usersFile, 'utf8')); } catch(e) {}
+  
+  const smpp = client.smppAccounts?.[0];
+  if (smpp) {
+    users[smpp.systemId] = {
+      password: smpp.password,
+      throughput: client.tps || 1,
+      sender: client.alias || client.name?.substring(0,11) || 'SMSGW',
+      kannel_user: 'tester',
+      kannel_pass: 'testerpass',
+      clientId: client.id,
+      accountId: client.accountId,
+      chargeRule: client.chargeRule,
+      countRule: client.countRule
+    };
+    fs.writeFileSync(usersFile, JSON.stringify(users, null, 2));
+    io.emit('live-log', { type: 'smpp_sync', message: `Client ${client.name} auto-synced to SMPP`, timestamp: new Date() });
+  }
+}
+
+// Update client
+app.put('/api/clients/:id', authenticateJWT, async (req, res) => {
+  try {
+    const d = req.body;
+    const data = {};
+    ['name','alias','balance','credit','dailyLimit','tps','priority','retry','status','dlrTimeout','forceDlr','invoiceFrequency','chargeRule','countRule','contentHidden','numberHidden','notes'].forEach(f => {
+      if (d[f] !== undefined) data[f] = d[f];
+    });
+    
+    const client = await prisma.client.update({ where: { id: req.params.id }, data });
+    
+    // Update SMPP user if smpp account exists
+    if (d.smppSystemId || d.smppPassword) {
+      const smpp = client.smppAccounts?.[0];
+      if (smpp) {
+        await prisma.smppAccount.update({
+          where: { id: smpp.id },
+          data: { systemId: d.smppSystemId || smpp.systemId, password: d.smppPassword || smpp.password }
+        });
+      }
+    }
+    
+    // Re-sync to SMPP
+    syncClientToSMPP(await prisma.client.findUnique({ where: { id: req.params.id }, include: { smppAccounts: true } }));
+    
+    res.json(client);
+  } catch(e) { res.status(400).json({ error: e.message }); }
+});
+
+// Old client create - remove it
+app._post_clients_old
+  try {
+    const d = req.body;
     const client = await prisma.client.create({
       data: {
         accountId: d.accountId || 'CLI'+Date.now(), name: d.name,

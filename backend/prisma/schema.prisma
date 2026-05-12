@@ -23,12 +23,21 @@ model Client {
   userId          String?
   accountId       String            @unique
   name            String
+  alias           String?
   balance         Float             @default(0)
+  credit          Float             @default(50000)
   dailyLimit      Int               @default(10000)
+  tps             Int               @default(1)
+  priority        Int               @default(1)
+  retry           Int               @default(0)
   status          String            @default("ACTIVE")
   forceDlr        Boolean           @default(false)
   dlrTimeout      Int               @default(0)
   invoiceFrequency String           @default("MONTHLY")
+  chargeRule      String            @default("DELIVERY")
+  countRule       String            @default("0-0-140-6")
+  contentHidden   String            @default("PLAINTEXT")
+  numberHidden    String            @default("SHOW")
   notes           String?
   createdAt       DateTime          @default(now())
   updatedAt       DateTime          @updatedAt
