@@ -1,0 +1,25 @@
+country,countryCode,mcc,mnc,operator,brand
+United States,1,310,410,AT&T,AT&T
+United States,1,311,480,Verizon,Verizon
+United States,1,310,260,T-Mobile,T-Mobile
+United Kingdom,44,234,15,Vodafone,Vodafone UK
+United Kingdom,44,234,10,O2,O2 UK
+United Kingdom,44,234,30,EE,EE
+India,91,405,857,Jio,Reliance Jio
+India,91,404,10,Airtel,Airtel
+India,91,404,20,Vodafone Idea,Vi
+Bangladesh,880,470,01,Grameenphone,GP
+Bangladesh,880,470,02,Robi,Robi
+Pakistan,92,410,01,Jazz,Jazz
+Pakistan,92,410,04,Zong,Zong
+Germany,49,262,01,Telekom,T-Mobile DE
+Germany,49,262,02,Vodafone,Vodafone DE
+France,33,208,01,Orange,Orange
+UAE,971,424,02,Etisalat,Etisalat
+UAE,971,424,03,du,du
+Saudi Arabia,966,420,01,STC,STC
+Singapore,65,525,01,Singtel,Singtel
+Malaysia,60,502,12,Maxis,Maxis
+Indonesia,62,510,10,Telkomsel,Telkomsel
+Brazil,55,724,10,Vivo,Vivo
+China,86,460,00,China Mobile,CMCC

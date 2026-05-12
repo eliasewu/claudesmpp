@@ -314,6 +314,72 @@ app.post('/api/rates', authenticateJWT, async (req, res) => {
 // ==================== MESSAGES WITH FULL KANNEL DLR ====================
 app.post('/api/messages/send', authenticateJWT, async (req, res) => {
   try {
+    const { to, content, clientId, supplierId, smsType } = req.body;
+    const client = await prisma.client.findUnique({ where: { id: clientId } });
+    if (!client) return res.status(404).json({ error: "Client not found" });
+    
+    // Find rate
+    const cc = to.replace(/^\+/,"").substring(0,2);
+    const rate = await prisma.rate.findFirst({ where: { OR: [{ clientId: client.id, countryCode: cc, status: 'ACTIVE' }, { countryCode: cc, clientId: null, status: 'ACTIVE' }, { countryCode: "*", clientId: null, status: 'ACTIVE' }] }, orderBy: { price: "asc" } });
+    const cost = rate?.price || 0.05;
+    
+    // Check balance first, then credit
+    const totalAvailable = (client.balance || 0) + (client.credit || 0);
+    if (totalAvailable < cost) return res.status(402).json({ error: `Insufficient funds. Need $${cost}, available: $${totalAvailable.toFixed(2)} (Balance: $${client.balance?.toFixed(2)}, Credit: $${client.credit?.toFixed(0)})` });
+    
+    // Deduct from balance first, then credit
+    if (client.balance >= cost) {
+      await prisma.client.update({ where: { id: client.id }, data: { balance: { decrement: cost } } });
+    } else {
+      const fromBalance = client.balance || 0;
+      const fromCredit = cost - fromBalance;
+      await prisma.client.update({ where: { id: client.id }, data: { balance: 0, credit: { decrement: fromCredit } } });
+    }
+    
+    const messageId = "MSG" + Date.now();
+    await prisma.message.create({ data: { messageId, clientId: client.id, to, content, cost, status: "SUBMITTED", supplierId, smsType: smsType || "PROMOTIONAL" } });
+    await prisma.transaction.create({ data: { clientId: client.id, type: "DEDUCTION", amount: -cost, description: `SMS to ${to}`, reference: messageId } });
+    
+    res.json({ success: true, messageId, cost, newBalance: client.balance - cost });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// Old send endpoint - replace
+app._old_send
+  try {
+    const { to, content, clientId, supplierId, smsType } = req.body;
+    const client = await prisma.client.findUnique({ where: { id: clientId } });
+    if (!client) return res.status(404).json({ error: "Client not found" });
+    
+    // Find rate
+    const cc = to.replace(/^\+/,"").substring(0,2);
+    const rate = await prisma.rate.findFirst({ where: { OR: [{ clientId: client.id, countryCode: cc, status: 'ACTIVE' }, { countryCode: cc, clientId: null, status: 'ACTIVE' }, { countryCode: "*", clientId: null, status: 'ACTIVE' }] }, orderBy: { price: "asc" } });
+    const cost = rate?.price || 0.05;
+    
+    // Check balance first, then credit
+    const totalAvailable = (client.balance || 0) + (client.credit || 0);
+    if (totalAvailable < cost) return res.status(402).json({ error: `Insufficient funds. Need $${cost}, available: $${totalAvailable.toFixed(2)} (Balance: $${client.balance?.toFixed(2)}, Credit: $${client.credit?.toFixed(0)})` });
+    
+    // Deduct from balance first, then credit
+    if (client.balance >= cost) {
+      await prisma.client.update({ where: { id: client.id }, data: { balance: { decrement: cost } } });
+    } else {
+      const fromBalance = client.balance || 0;
+      const fromCredit = cost - fromBalance;
+      await prisma.client.update({ where: { id: client.id }, data: { balance: 0, credit: { decrement: fromCredit } } });
+    }
+    
+    const messageId = "MSG" + Date.now();
+    await prisma.message.create({ data: { messageId, clientId: client.id, to, content, cost, status: "SUBMITTED", supplierId, smsType: smsType || "PROMOTIONAL" } });
+    await prisma.transaction.create({ data: { clientId: client.id, type: "DEDUCTION", amount: -cost, description: `SMS to ${to}`, reference: messageId } });
+    
+    res.json({ success: true, messageId, cost, newBalance: client.balance - cost });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// Old send endpoint - replace
+app._old_send
+  try {
     const { to, content, clientId, supplierId } = req.body;
     const client = await prisma.client.findUnique({ where: { id: clientId } });
     if (!client) return res.status(404).json({ error: 'Client not found' });
@@ -671,6 +737,72 @@ app.put("/api/clients/:id/dlr-settings", authenticateJWT, async (req, res) => {
   const { forceDlr, dlrTimeout } = req.body;
   await prisma.client.update({ where: { id: req.params.id }, data: { forceDlr: forceDlr === true, dlrTimeout: parseInt(dlrTimeout) || 0 } });
   res.json({ success: true });
+});
+
+
+// ==================== BULK RATE CREATION ====================
+app.post("/api/rates/bulk", authenticateJWT, async (req, res) => {
+  const { country, countryCode, price, type, clientId, supplierId, mccMncIds, smsType } = req.body;
+  let added = 0;
+  
+  // Deactivate old rates for same client/country
+  if (clientId) {
+    await prisma.rate.updateMany({ where: { clientId, countryCode, status: "ACTIVE" }, data: { status: "INACTIVE" } });
+  }
+  
+  if (mccMncIds && mccMncIds.length > 0) {
+    for (const id of mccMncIds) {
+      const mcc = await prisma.$queryRaw\`SELECT * FROM MccMnc WHERE id = \${id}\`;
+      if (mcc.length > 0) {
+        await prisma.rate.create({ data: { country, countryCode, mcc: mcc[0].mcc, mnc: mcc[0].mnc, operator: mcc[0].operator, price: parseFloat(price), type: type || "SENDING", clientId: clientId || null, supplierId: supplierId || null, smsType: smsType || "transactional", status: "ACTIVE" } });
+        added++;
+      }
+    }
+  } else {
+    await prisma.rate.create({ data: { country, countryCode, price: parseFloat(price), type: type || "SENDING", clientId: clientId || null, supplierId: supplierId || null, smsType: smsType || "transactional", status: "ACTIVE" } });
+    added++;
+  }
+  
+  res.json({ added, message: \`\${added} rates created. Old rates deactivated.\` });
+});
+
+// ==================== GET RATES WITH TIMESTAMPS ====================
+app.get("/api/rates/history", authenticateJWT, async (req, res) => {
+  const rates = await prisma.rate.findMany({ orderBy: { createdAt: "desc" }, take: 200, include: { client: { select: { name: true } }, supplier: { select: { name: true } } } });
+  res.json({ rates });
+});
+
+
+// ==================== BULK RATE CREATION ====================
+app.post("/api/rates/bulk", authenticateJWT, async (req, res) => {
+  const { country, countryCode, price, type, clientId, supplierId, mccMncIds, smsType } = req.body;
+  let added = 0;
+  
+  // Deactivate old rates for same client/country
+  if (clientId) {
+    await prisma.rate.updateMany({ where: { clientId, countryCode, status: "ACTIVE" }, data: { status: "INACTIVE" } });
+  }
+  
+  if (mccMncIds && mccMncIds.length > 0) {
+    for (const id of mccMncIds) {
+      const mcc = await prisma.$queryRaw\`SELECT * FROM MccMnc WHERE id = \${id}\`;
+      if (mcc.length > 0) {
+        await prisma.rate.create({ data: { country, countryCode, mcc: mcc[0].mcc, mnc: mcc[0].mnc, operator: mcc[0].operator, price: parseFloat(price), type: type || "SENDING", clientId: clientId || null, supplierId: supplierId || null, smsType: smsType || "transactional", status: "ACTIVE" } });
+        added++;
+      }
+    }
+  } else {
+    await prisma.rate.create({ data: { country, countryCode, price: parseFloat(price), type: type || "SENDING", clientId: clientId || null, supplierId: supplierId || null, smsType: smsType || "transactional", status: "ACTIVE" } });
+    added++;
+  }
+  
+  res.json({ added, message: \`\${added} rates created. Old rates deactivated.\` });
+});
+
+// ==================== GET RATES WITH TIMESTAMPS ====================
+app.get("/api/rates/history", authenticateJWT, async (req, res) => {
+  const rates = await prisma.rate.findMany({ orderBy: { createdAt: "desc" }, take: 200, include: { client: { select: { name: true } }, supplier: { select: { name: true } } } });
+  res.json({ rates });
 });
 
 app.get('/api/health', async (req, res) => {
