@@ -240,3 +240,13 @@ model PricingRule {
   pricePerMsg Float
   operator    String?
 }
+
+model MccMnc {
+  id          String   @id @default(uuid())
+  country     String
+  countryCode String
+  mcc         String
+  mnc         String
+  operator    String   @default("All")
+  createdAt   DateTime @default(now())
+}
