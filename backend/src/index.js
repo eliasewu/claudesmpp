@@ -748,6 +748,19 @@ app.get("/api/clients/:id/credentials", authenticateJWT, async (req, res) => { c
 app.delete("/api/clients/:id", authenticateJWT, async (req, res) => { await prisma.client.delete({ where: { id: req.params.id } }); res.json({ success: true }); });
 app.delete("/api/rates/:id", authenticateJWT, async (req, res) => { await prisma.rate.delete({ where: { id: req.params.id } }); res.json({ success: true }); });
 
+
+app.put("/api/clients/:id/dlr-settings", authenticateJWT, async (req, res) => {
+  const { forceDlr, dlrTimeout } = req.body;
+  await prisma.client.update({ where: { id: req.params.id }, data: { forceDlr: forceDlr===true, dlrTimeout: parseInt(dlrTimeout)||0 } });
+  res.json({ success: true });
+});
+
+app.put("/api/suppliers/:id/dlr-settings", authenticateJWT, async (req, res) => {
+  const { forceDlr, dlrTimeout } = req.body;
+  await prisma.supplier.update({ where: { id: req.params.id }, data: { forceDlr: forceDlr===true, dlrTimeout: parseInt(dlrTimeout)||0 } });
+  res.json({ success: true });
+});
+
 app.get('/api/health', async (req, res) => {
   try { await prisma.$queryRaw`SELECT 1`; res.json({ status: 'healthy', db: 'connected', timestamp: new Date().toISOString() }); }
   catch(e) { res.status(500).json({ status: 'degraded' }); }
