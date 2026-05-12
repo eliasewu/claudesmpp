@@ -191,27 +191,26 @@ app.post('/api/clients', authenticateJWT, async (req, res) => {
 
 // Auto-sync function
 function syncClientToSMPP(client) {
-  const fs = require('fs');
-  const usersFile = '/etc/kannel/smpp_users.json';
-  let users = {};
-  try { users = JSON.parse(fs.readFileSync(usersFile, 'utf8')); } catch(e) {}
-  
-  const smpp = client.smppAccounts?.[0];
-  if (smpp) {
-    users[smpp.systemId] = {
-      password: smpp.password,
-      throughput: client.tps || 1,
-      sender: client.alias || client.name?.substring(0,11) || 'SMSGW',
-      kannel_user: 'tester',
-      kannel_pass: 'testerpass',
-      clientId: client.id,
-      accountId: client.accountId,
-      chargeRule: client.chargeRule,
-      countRule: client.countRule
-    };
-    fs.writeFileSync(usersFile, JSON.stringify(users, null, 2));
-    io.emit('live-log', { type: 'smpp_sync', message: `Client ${client.name} auto-synced to SMPP`, timestamp: new Date() });
-  }
+  try {
+    const fs = require('fs');
+    const usersFile = '/etc/kannel/smpp_users.json';
+    let users = {};
+    try { users = JSON.parse(fs.readFileSync(usersFile, 'utf8')); } catch(e) {}
+    
+    const smpp = client.smppAccounts?.[0];
+    if (smpp && smpp.systemId) {
+      users[smpp.systemId] = {
+        password: smpp.password || 'password',
+        throughput: client.tps || 1,
+        sender: (client.alias || client.name || 'SMSGW').substring(0, 11),
+        kannel_user: 'tester',
+        kannel_pass: 'testerpass',
+        clientId: client.id,
+        accountId: client.accountId
+      };
+      fs.writeFileSync(usersFile, JSON.stringify(users, null, 2));
+    }
+  } catch(e) { console.log('SMPP sync error:', e.message); }
 }
 
 // Update client
@@ -237,57 +236,11 @@ app.put('/api/clients/:id', authenticateJWT, async (req, res) => {
     }
     
     // Re-sync to SMPP
-    syncClientToSMPP(await prisma.client.findUnique({ where: { id: req.params.id }, include: { smppAccounts: true } }));
+    // sync removed - use /api/clients/:id/sync-smpp endpoint
     
     res.json(client);
   } catch(e) { res.status(400).json({ error: e.message }); }
 });
-
-// Old client create - remove it
-app._post_clients_old
-  try {
-    const d = req.body;
-    const client = await prisma.client.create({
-      data: {
-        accountId: d.accountId || 'CLI'+Date.now(), name: d.name,
-        balance: parseFloat(d.balance)||0, dailyLimit: parseInt(d.dailyLimit)||10000,
-        dlrTimeout: parseInt(d.dlrTimeout)||0, forceDlr: d.forceDlr===true||d.forceDlr==='true',
-        invoiceFrequency: d.invoiceFrequency || 'MONTHLY',
-        smppAccounts: d.smppSystemId ? { create: { systemId: d.smppSystemId, password: d.smppPassword||'', host: d.smppHost||'', port: parseInt(d.smppPort)||2775 } } : undefined,
-        httpConnections: d.httpApiKey ? { create: { apiKey: d.httpApiKey, baseUrl: d.httpBaseUrl||'' } } : undefined,
-      }
-    });
-    if(parseFloat(d.balance)>0) await prisma.transaction.create({ data: { clientId: client.id, type: 'TOPUP', amount: parseFloat(d.balance), description: 'Initial', reference: 'INIT-'+client.accountId } });
-    io.emit('live-log', { type: 'client_created', name: d.name, timestamp: new Date() });
-    res.json(client);
-  } catch(e) { res.status(400).json({ error: e.message }); }
-});
-
-app.put('/api/clients/:id', authenticateJWT, async (req, res) => {
-  const { name, balance, dailyLimit, status, dlrTimeout, forceDlr, invoiceFrequency, notes } = req.body;
-  const client = await prisma.client.update({ where: { id: req.params.id }, data: { name, balance, dailyLimit, status, dlrTimeout, forceDlr, invoiceFrequency, notes } });
-  res.json(client);
-});
-
-app.delete('/api/clients/:id', authenticateJWT, async (req, res) => {
-  await prisma.client.delete({ where: { id: req.params.id } });
-  res.json({ success: true });
-});
-
-app.post('/api/clients/:id/topup', authenticateJWT, async (req, res) => {
-  const { amount, description, paymentMethod } = req.body;
-  const ta = parseFloat(amount);
-  await prisma.client.update({ where: { id: req.params.id }, data: { balance: { increment: ta } } });
-  const tx = await prisma.transaction.create({ data: { clientId: req.params.id, type: 'TOPUP', amount: ta, description, reference: 'TOPUP-'+Date.now(), paymentMethod: paymentMethod||'MANUAL' } });
-  io.emit('live-log', { type: 'topup', name: req.params.id, amount: ta, timestamp: new Date() });
-  res.json({ success: true, transaction: tx });
-});
-
-app.get('/api/clients/:id/transactions', authenticateJWT, async (req, res) => {
-  const txs = await prisma.transaction.findMany({ where: { clientId: req.params.id }, orderBy: { createdAt: 'desc' }, take: 100 });
-  res.json({ transactions: txs });
-});
-
 // Client SMPP Bind Check
 app.get('/api/clients/:id/check-bind', authenticateJWT, async (req, res) => {
   const client = await prisma.client.findUnique({ where: { id: req.params.id }, include: { smppAccounts: true } });
